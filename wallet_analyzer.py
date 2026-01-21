@@ -246,43 +246,88 @@ class WalletAnalyzer:
             - inner instructions (swaps, transfers)
             - program IDs involved
         """
-        if not tx_data or 'blockTime' not in tx_data:
+        if not tx_data:
             return {}
 
-        meta = tx_data.get('meta', {})
-        transaction = tx_data.get('transaction', {})
+        # Handle both dict and solders object
+        if hasattr(tx_data, 'block_time'):
+            # Solders object
+            timestamp = tx_data.block_time if tx_data.block_time else 0
+            slot = tx_data.slot if hasattr(tx_data, 'slot') else 0
 
-        parsed = {
-            'signature': tx_data.get('transaction', {}).get('signatures', [''])[0],
-            'timestamp': tx_data.get('blockTime', 0),
-            'timestamp_str': format_timestamp(tx_data.get('blockTime', 0)),
-            'slot': tx_data.get('slot', 0),
-            'fee': meta.get('fee', 0),
-            'success': meta.get('err') is None,
-            'pre_balances': meta.get('preBalances', []),
-            'post_balances': meta.get('postBalances', []),
-            'inner_instructions': meta.get('innerInstructions', []),
-            'log_messages': meta.get('logMessages', []),
-            'accounts': [],
-            'programs': []
-        }
+            meta = tx_data.transaction.meta if hasattr(tx_data, 'transaction') and hasattr(tx_data.transaction, 'meta') else None
+            transaction = tx_data.transaction.transaction if hasattr(tx_data, 'transaction') and hasattr(tx_data.transaction, 'transaction') else None
 
-        # Extract account keys
-        message = transaction.get('message', {})
-        if 'accountKeys' in message:
-            parsed['accounts'] = [
-                acc.get('pubkey', acc) if isinstance(acc, dict) else acc
-                for acc in message['accountKeys']
-            ]
+            if not meta or not transaction:
+                return {}
 
-        # Extract program IDs from instructions
-        instructions = message.get('instructions', [])
-        for inst in instructions:
-            program_id_index = inst.get('programIdIndex')
-            if program_id_index is not None and program_id_index < len(parsed['accounts']):
-                program = parsed['accounts'][program_id_index]
-                if program not in parsed['programs']:
-                    parsed['programs'].append(program)
+            parsed = {
+                'signature': str(transaction.signatures[0]) if transaction.signatures else '',
+                'timestamp': timestamp,
+                'timestamp_str': format_timestamp(timestamp),
+                'slot': slot,
+                'fee': meta.fee if hasattr(meta, 'fee') else 0,
+                'success': not meta.err if hasattr(meta, 'err') else True,
+                'pre_balances': list(meta.pre_balances) if hasattr(meta, 'pre_balances') else [],
+                'post_balances': list(meta.post_balances) if hasattr(meta, 'post_balances') else [],
+                'inner_instructions': [],
+                'log_messages': list(meta.log_messages) if hasattr(meta, 'log_messages') else [],
+                'accounts': [],
+                'programs': []
+            }
+
+            # Extract accounts from message
+            if hasattr(transaction, 'message') and hasattr(transaction.message, 'account_keys'):
+                parsed['accounts'] = [str(key) for key in transaction.message.account_keys]
+
+            # Extract program IDs
+            if hasattr(transaction, 'message') and hasattr(transaction.message, 'instructions'):
+                for inst in transaction.message.instructions:
+                    if hasattr(inst, 'program_id_index'):
+                        idx = inst.program_id_index
+                        if idx < len(parsed['accounts']):
+                            program = parsed['accounts'][idx]
+                            if program not in parsed['programs']:
+                                parsed['programs'].append(program)
+        else:
+            # Dict response
+            if 'blockTime' not in tx_data:
+                return {}
+
+            meta = tx_data.get('meta', {})
+            transaction = tx_data.get('transaction', {})
+
+            parsed = {
+                'signature': tx_data.get('transaction', {}).get('signatures', [''])[0],
+                'timestamp': tx_data.get('blockTime', 0),
+                'timestamp_str': format_timestamp(tx_data.get('blockTime', 0)),
+                'slot': tx_data.get('slot', 0),
+                'fee': meta.get('fee', 0),
+                'success': meta.get('err') is None,
+                'pre_balances': meta.get('preBalances', []),
+                'post_balances': meta.get('postBalances', []),
+                'inner_instructions': meta.get('innerInstructions', []),
+                'log_messages': meta.get('logMessages', []),
+                'accounts': [],
+                'programs': []
+            }
+
+            # Extract account keys
+            message = transaction.get('message', {})
+            if 'accountKeys' in message:
+                parsed['accounts'] = [
+                    acc.get('pubkey', acc) if isinstance(acc, dict) else acc
+                    for acc in message['accountKeys']
+                ]
+
+            # Extract program IDs from instructions
+            instructions = message.get('instructions', [])
+            for inst in instructions:
+                program_id_index = inst.get('programIdIndex')
+                if program_id_index is not None and program_id_index < len(parsed['accounts']):
+                    program = parsed['accounts'][program_id_index]
+                    if program not in parsed['programs']:
+                        parsed['programs'].append(program)
 
         return parsed
 

@@ -10,6 +10,8 @@ from datetime import datetime
 import requests
 from solana.rpc.api import Client
 from solana.rpc.types import TxOpts
+from solders.pubkey import Pubkey
+from solders.signature import Signature
 import config
 from utils import (
     retry_with_backoff,
@@ -128,24 +130,47 @@ class WalletAnalyzer:
         before_sig = None
         max_txs = config.ANALYSIS_CONFIG['max_tx_history']
 
+        # Convert address string to Pubkey object
+        pubkey = Pubkey.from_string(address)
+
         while len(all_signatures) < max_txs:
             try:
                 result = self.rpc_client.call_with_failover(
                     'get_signatures_for_address',
-                    address,
+                    pubkey,
                     limit=min(limit, max_txs - len(all_signatures)),
                     before=before_sig
                 )
 
-                if not result or not result.get('result'):
+                if not result:
                     break
 
-                signatures = result['result']
+                # Handle both dict response and solders response object
+                if hasattr(result, 'value'):
+                    signatures = result.value
+                elif isinstance(result, dict) and 'result' in result:
+                    signatures = result['result']
+                else:
+                    break
                 if not signatures:
                     break
 
-                all_signatures.extend(signatures)
-                before_sig = signatures[-1]['signature']
+                # Convert signatures to dicts if they're objects
+                sig_list = []
+                for sig in signatures:
+                    if hasattr(sig, 'signature'):
+                        sig_dict = {
+                            'signature': str(sig.signature),
+                            'slot': sig.slot if hasattr(sig, 'slot') else 0,
+                            'err': sig.err if hasattr(sig, 'err') else None,
+                            'blockTime': sig.block_time if hasattr(sig, 'block_time') else 0
+                        }
+                        sig_list.append(sig_dict)
+                    else:
+                        sig_list.append(sig)
+
+                all_signatures.extend(sig_list)
+                before_sig = sig_list[-1]['signature'] if sig_list else None
 
                 print(f"   Fetched {len(all_signatures)} transactions...")
 
@@ -182,17 +207,28 @@ class WalletAnalyzer:
             return cached
 
         try:
+            # Convert signature string to Signature object
+            sig_obj = Signature.from_string(signature)
+
             result = self.rpc_client.call_with_failover(
                 'get_transaction',
-                signature,
+                sig_obj,
                 encoding=encoding,
                 max_supported_transaction_version=0
             )
 
-            if result and result.get('result'):
-                tx_data = result['result']
-                self._set_cached(cache_key, tx_data)
-                return tx_data
+            if result:
+                # Handle both dict response and solders response object
+                if hasattr(result, 'value'):
+                    tx_data = result.value
+                elif isinstance(result, dict) and 'result' in result:
+                    tx_data = result['result']
+                else:
+                    return None
+
+                if tx_data:
+                    self._set_cached(cache_key, tx_data)
+                    return tx_data
 
         except Exception as e:
             print(f"⚠️  Error fetching tx {signature[:8]}: {str(e)[:80]}")
@@ -258,13 +294,23 @@ class WalletAnalyzer:
             Dict with lamports and SOL amounts
         """
         try:
+            # Convert address string to Pubkey object
+            pubkey = Pubkey.from_string(address)
+
             result = self.rpc_client.call_with_failover(
                 'get_balance',
-                address
+                pubkey
             )
 
-            if result and 'result' in result:
-                lamports = result['result']['value']
+            if result:
+                # Handle both dict response and solders response object
+                if hasattr(result, 'value'):
+                    lamports = result.value
+                elif isinstance(result, dict) and 'result' in result:
+                    lamports = result['result']['value']
+                else:
+                    lamports = 0
+
                 return {
                     'lamports': lamports,
                     'sol': lamports / 1e9,
